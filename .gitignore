@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+ENV/
+
+# Ignore output and scoring directories
+output/
+scoring/
+
+# VS Code settings
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
