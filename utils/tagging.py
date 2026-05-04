@@ -149,7 +149,7 @@ def pubmed_extract_tags(text: str, max_tags: int = 5) -> list:
         tags = nltk.pos_tag(words)
     except Exception:
         # Fallback if nltk packages aren't downloaded somehow
-        return extract_tags(text, max_tags)
+        return _frequency_fallback(text, max_tags)
 
     phrases = []
     current_phrase = []

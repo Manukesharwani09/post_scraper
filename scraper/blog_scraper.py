@@ -17,13 +17,13 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from utils.chunking import chunk_text
+from utils.chunking import chunk_text_by_words
 from utils.language_detect import detect_language
 from utils.tagging import extract_tags
 BLOG_URLS = [
-    "https://realpython.com/python-web-scraping-practical-introduction/",
+    "https://www.scrapingbee.com/blog/web-scraping-101-with-python/",
     "https://huggingface.co/blog/bert-101",
-    "https://en.wikipedia.org/wiki/Artificial_intelligence_in_healthcare",
+    "https://upplabs.com/blog/how-we-built-clinical-ai-assistant/",
 ]
 
 DEFAULT_HEADERS = {
@@ -58,6 +58,8 @@ def parse_json_ld(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         if isinstance(data, list):
             items.extend([d for d in data if isinstance(d, dict)])
         elif isinstance(data, dict):
+            if isinstance(data.get("@graph"), list):
+                items.extend([d for d in data["@graph"] if isinstance(d, dict)])
             items.append(data)
 
     return items
@@ -86,10 +88,11 @@ def extract_from_json_ld(items: List[Dict[str, Any]]) -> Dict[str, Optional[str]
             return {
                 "author": author,
                 "date": item.get("datePublished"),
+                "title": item.get("headline"),
                 "body": item.get("articleBody"),
             }
 
-    return {"author": None, "date": None, "body": None}
+    return {"author": None, "date": None, "title": None, "body": None}
 
 
 def extract_author(soup: BeautifulSoup, json_ld: Dict[str, Optional[str]]) -> str:
@@ -148,6 +151,20 @@ def extract_description(soup: BeautifulSoup) -> str:
     return ""
 
 
+def extract_title(soup: BeautifulSoup, json_ld: Dict[str, Optional[str]]) -> str:
+    if json_ld.get("title"):
+        return str(json_ld["title"]).strip()
+
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content"):
+        return og_title["content"].strip()
+
+    if soup.title and soup.title.get_text(strip=True):
+        return soup.title.get_text(strip=True)
+
+    return "Unknown"
+
+
 def strip_unwanted_sections(soup: BeautifulSoup) -> None:
     for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
         tag.decompose()
@@ -169,8 +186,8 @@ def normalize_whitespace(text: str) -> str:
 
 def collect_paragraphs(container: BeautifulSoup) -> List[str]:
     paragraphs: List[str] = []
-    for p in container.find_all("p"):
-        text = normalize_whitespace(p.get_text(" ", strip=True))
+    for tag in container.find_all(["p", "li", "h2", "h3", "pre", "code"]):
+        text = normalize_whitespace(tag.get_text(" ", strip=True))
         if len(text) < 30:
             continue
         paragraphs.append(text)
@@ -191,8 +208,12 @@ def dedupe_paragraphs(paragraphs: List[str]) -> List[str]:
 
 def extract_body(soup: BeautifulSoup, json_ld: Dict[str, Optional[str]]) -> str:
     if json_ld.get("body"):
-        body = normalize_whitespace(str(json_ld["body"]))
-        return body
+        raw_body = str(json_ld["body"])
+        if "<" in raw_body and ">" in raw_body:
+            raw_body = BeautifulSoup(raw_body, "html.parser").get_text(" ")
+        body = normalize_whitespace(raw_body)
+        if len(body) >= 200:
+            return body
 
     strip_unwanted_sections(soup)
 
@@ -242,12 +263,20 @@ def detect_region(url: str) -> str:
     return "Global"
 
 
-def build_record(url: str, author: str, published_date: str, body: str) -> Dict[str, Any]:
+def build_record(
+    url: str,
+    author: str,
+    published_date: str,
+    body: str,
+    title: str,
+    description: str,
+) -> Dict[str, Any]:
     language = detect_language(body) if body else "Unknown"
     tags = extract_tags(body) if body else []
-    chunks = chunk_text(body) if body else []
+    chunks = chunk_text_by_words(body) if body else []
 
-    return {
+    from scoring.trust_score import calculate_trust_score
+    record = {
         "source_url": url,
         "source_type": "blog",
         "author": author or "Unknown",
@@ -255,9 +284,12 @@ def build_record(url: str, author: str, published_date: str, body: str) -> Dict[
         "language": language,
         "region": detect_region(url),
         "topic_tags": tags,
-        "trust_score": 0.0,
         "content_chunks": chunks,
+        "title": title or "Unknown",
+        "description": description or "",
     }
+    record["trust_score"] = calculate_trust_score(record)
+    return record
 
 
 def scrape_blog(url: str) -> Dict[str, Any]:
@@ -271,6 +303,7 @@ def scrape_blog(url: str) -> Dict[str, Any]:
     raw_date = extract_date(soup, json_ld)
     published_date = normalize_date(raw_date)
     description = extract_description(soup)
+    title = extract_title(soup, json_ld)
     body = extract_body(soup, json_ld)
 
     if not body and description:
@@ -281,7 +314,7 @@ def scrape_blog(url: str) -> Dict[str, Any]:
     if not published_date:
         published_date = "Unknown"
 
-    return build_record(url, author, published_date, body)
+    return build_record(url, author, published_date, body, title, description)
 
 
 def main() -> None:
@@ -291,7 +324,7 @@ def main() -> None:
         try:
             data = scrape_blog(url)
         except Exception:
-            data = build_record(url, "Unknown", "Unknown", "")
+            data = build_record(url, "Unknown", "Unknown", "", "Unknown", "")
         results.append(data)
 
     output_dir = os.path.join(os.path.dirname(__file__), "..", "output")

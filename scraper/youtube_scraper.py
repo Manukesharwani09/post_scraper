@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from utils.chunking import chunk_text
 from utils.language_detect import detect_language
 from utils.tagging import extract_tags
 
@@ -137,45 +136,145 @@ def get_transcript(video_url: str) -> str:
 
 # ── Content cleaning ────────────────────────────────────────────────────────────
 
+PROMO_KEYWORDS = [
+    "subscribe", "patreon", "click", "link", "follow", "twitter", "facebook",
+    "instagram", "reddit", "website", "download", "stream", "playlist", "course",
+    "certificate", "program", "specialization", "bootcamp", "career", "jobassist",
+    "learn more", "watch more", "sign up", "buy", "sponsor", "donation",
+]
+
+
+def _looks_promotional(text: str) -> bool:
+    lowered = text.lower()
+    if re.search(r'https?://\S+', lowered):
+        return True
+    return any(k in lowered for k in PROMO_KEYWORDS)
+
+
+def _strip_promotional_lines(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    kept = [ln for ln in lines if not _looks_promotional(ln)]
+    return "\n".join(kept)
+
+
+def _dedupe_sentences(text: str) -> str:
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    seen = set()
+    kept = []
+    for sentence in sentences:
+        norm = re.sub(r'\W+', ' ', sentence.lower()).strip()
+        if len(norm.split()) < 4:
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        kept.append(sentence.strip())
+    return " ".join(kept)
+
+
 def clean_text(text: str) -> str:
     """
     Remove noise from YouTube description or transcript:
       - URLs
       - Hashtags
       - Timestamps (e.g., 10:24, 1:23:45)
-      - Emojis
-      - Promotional text ("subscribe", "link in bio", "patreon")
+      - Emojis and non-text symbols
+      - Promotional / marketing lines
     """
     if not text:
         return ""
 
+    # Remove promotional or link-heavy lines before token cleanup
+    text = _strip_promotional_lines(text)
+
     # Replace URLs with spaces to safely prevent word-merging
     text = re.sub(r'https?://[^\s]+', ' ', text)
-    
-    # Remove timestamps properly matching start of line or space
+
+    # Remove timestamps and timeline markers
     text = re.sub(r'\b\d{1,2}:\d{2}(:\d{2})?\b', ' ', text)
+    text = re.sub(r'\b\d{1,2}\s*-\s*', ' ', text)
 
     # Remove hashtags but leave space
     text = re.sub(r'#[a-zA-Z0-9_]+', ' ', text)
 
-    # Remove standard promotional phrases
-    promo_phrases = [
-        "subscribe to our channel", "subscribe", "patreon", "click here", "link below", 
-        "link in description", "follow us", "twitter", "facebook", "instagram", "reddit",
-        "website:", "download the music", "stream the music", "learn more at:"
-    ]
-    for phrase in promo_phrases:
-        text = re.sub(rf'\b{re.escape(phrase)}\b', ' ', text, flags=re.IGNORECASE)
-
     # Remove generic bracketed sounds (e.g. [Music], (Applause))
     text = re.sub(r'\[.*?\]|\(.*?\)', ' ', text)
-    
-    # Remove emojis (basic range block)
+
+    # Remove emojis and non-text symbols
     text = re.sub(r'[^\w\s.,?!;:\-\'\"]', ' ', text)
 
     # Collapse multiple spaces safely
     text = re.sub(r'\s+', ' ', text).strip()
+
+    # Drop repeated / boilerplate sentences
+    text = _dedupe_sentences(text)
     return text
+
+
+def chunk_text_by_words(text: str, min_words: int = 100, max_words: int = 300) -> List[str]:
+    if not text:
+        return []
+
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for sentence in sentences:
+        words = sentence.split()
+        if not words:
+            continue
+        if current_len + len(words) <= max_words:
+            current.append(sentence)
+            current_len += len(words)
+        else:
+            if current:
+                chunks.append(" ".join(current).strip())
+            current = [sentence]
+            current_len = len(words)
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    # Merge short trailing chunk to keep 100-300 words as much as possible
+    if len(chunks) >= 2 and len(chunks[-1].split()) < min_words:
+        chunks[-2] = (chunks[-2] + " " + chunks[-1]).strip()
+        chunks.pop()
+
+    return [c for c in chunks if len(c.split()) >= min_words or len(chunks) == 1]
+
+
+def refine_tags(text: str, tags: List[str]) -> List[str]:
+    specific_tags = []
+    text_lower = text.lower()
+
+    tag_rules = {
+        "Neural Networks": ["neural network", "neurons", "layers"],
+        "Weights and Biases": ["weights", "biases"],
+        "Activation Functions": ["relu", "sigmoid", "activation function"],
+        "Linear Algebra Notation": ["linear algebra", "matrix", "vector"],
+        "Edge Detection": ["edge detection"],
+        "Supervised Learning": ["supervised learning"],
+        "Unsupervised Learning": ["unsupervised learning"],
+        "Reinforcement Learning": ["reinforcement learning"],
+        "Machine Learning Applications": ["applications", "used in", "industries"],
+        "Pattern Recognition": ["pattern recognition"],
+    }
+
+    for tag, keywords in tag_rules.items():
+        if any(kw in text_lower for kw in keywords):
+            specific_tags.append(tag)
+
+    # Remove generic / low-signal tags
+    drop = {"ai", "technology", "research", "data science", "youtube"}
+    cleaned = [t for t in tags if t.lower() not in drop]
+
+    combined = []
+    for t in specific_tags + cleaned:
+        if t not in combined:
+            combined.append(t)
+
+    return combined[:8]
 
 
 # ── Record builder ────────────────────────────────────────────────────────────
@@ -191,14 +290,15 @@ def build_record(url: str, meta: Dict[str, Optional[str]], transcript: str) -> D
         if clean_desc:
             clean_content += " " + clean_desc[:500]
     else:
-        # Aggressive aggressive desc formatting handled by clean_text natively
+        # Aggressive desc formatting handled by clean_text natively
         clean_content = clean_text(raw_desc)
     
     lang = detect_language(clean_content) if clean_content else "Unknown"
     
     # Optional: we can use pubmed_extract_tags for high-quality Nouns but normal extract_tags is fine if text is clean
     tags = extract_tags(clean_content) if clean_content else []
-    chunks = chunk_text(clean_content) if clean_content else []
+    tags = refine_tags(clean_content, tags) if clean_content else []
+    chunks = chunk_text_by_words(clean_content) if clean_content else []
 
     # Normalize Date
     raw_date = meta.get("publish_date") or "Unknown"
@@ -220,6 +320,11 @@ def build_record(url: str, meta: Dict[str, Optional[str]], transcript: str) -> D
         "description": meta.get("description") or "",
     }
     record["trust_score"] = calculate_trust_score(record)
+    # Transcript presence raises trust; missing transcript slightly lowers it
+    if transcript:
+        record["trust_score"] = min(record["trust_score"] + 0.05, 1.0)
+    else:
+        record["trust_score"] = max(record["trust_score"] - 0.08, 0.0)
     return record
 
 

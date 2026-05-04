@@ -72,3 +72,40 @@ def _split_by_sentences(text: str, max_size: int) -> list:
         chunks.append(current)
 
     return chunks
+
+
+def chunk_text_by_words(text: str, min_words: int = 100, max_words: int = 300) -> list:
+    """
+    Split text into sentence-aligned chunks by word count.
+    Useful for retrieval and LLM ingestion.
+    """
+    if not text or not text.strip():
+        return []
+
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks = []
+    current = []
+    word_count = 0
+
+    for sentence in sentences:
+        words = sentence.split()
+        if not words:
+            continue
+        if word_count + len(words) <= max_words:
+            current.append(sentence)
+            word_count += len(words)
+        else:
+            if current:
+                chunks.append(" ".join(current).strip())
+            current = [sentence]
+            word_count = len(words)
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    if len(chunks) >= 2 and len(chunks[-1].split()) < min_words:
+        chunks[-2] = (chunks[-2] + " " + chunks[-1]).strip()
+        chunks.pop()
+
+    return [c for c in chunks if c.strip()]
