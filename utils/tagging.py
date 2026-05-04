@@ -35,36 +35,34 @@ DOMAIN_HINTS = {
 }
 
 
-def extract_tags(text: str, max_tags: int = 8) -> list:
+def extract_tags(text: str, max_tags: int = 5) -> list:
     """
     Extract topic tags from the given text.
     
     Strategy:
-      1. Try RAKE for keyword extraction (NLP-based).
-      2. Fall back to domain hint matching + word frequency.
+      1. Use RAKE for keyword extraction (NLP-based) with capitalization rules.
+      2. Exclude highly generic terms like 'Research'.
 
     Args:
         text: Input text to analyse.
         max_tags: Maximum number of tags to return.
 
     Returns:
-        List of tag strings, e.g. ["AI", "Healthcare", "machine learning"]
+        List of tag strings, e.g. ["Recombinant GDF11", "Machine Learning"]
     """
     if not text or not text.strip():
         return []
 
-    text_lower = text.lower()
-    matched_domain_tags = _match_domain_hints(text_lower)
-
     try:
-        rake_tags = _rake_extract(text, max_tags)
+        rake_tags = _rake_extract(text, max_tags + 2)
     except Exception:
         rake_tags = []
 
-    # Combine domain tags (high confidence) with RAKE tags
-    combined = matched_domain_tags.copy()
+    # Prioritize RAKE results natively. Don't crowd with domain hints.
+    combined = []
+    
     for tag in rake_tags:
-        if tag not in combined:
+        if tag not in combined and len(tag) > 3:
             combined.append(tag)
 
     return combined[:max_tags]
@@ -86,9 +84,16 @@ def _match_domain_hints(text_lower: str) -> list:
     return sorted_cats
 
 
+GENERIC_STOP_WORDS = {
+    "research", "healthcare", "article", "study", "investigation", 
+    "paper", "analysis", "data", "results", "methods", "conclusion",
+    "background", "overview", "introduction"
+}
+
 def _rake_extract(text: str, max_tags: int) -> list:
     """
     Use RAKE-NLTK to extract key phrases from the text.
+    Filters out noisy generic nouns and properly formats acronyms.
     """
     from rake_nltk import Rake
 
@@ -100,14 +105,23 @@ def _rake_extract(text: str, max_tags: int) -> list:
     r.extract_keywords_from_text(text)
     phrases = r.get_ranked_phrases()
 
-    # Clean and filter
-    cleaned = []
-    for phrase in phrases[:max_tags * 2]:
-        phrase = phrase.strip().title()
-        if len(phrase) > 2 and phrase not in cleaned:
-            cleaned.append(phrase)
+    cleaned_tags = []
+    for phrase in phrases:
+        # Filter out purely generic words
+        if phrase.lower().strip() in GENERIC_STOP_WORDS:
+            continue
+        # Check if the phrase is just numbers
+        if phrase.replace(".", "").isdigit():
+            continue
+            
+        # Capitalize acronyms (e.g., tgfβ, gdf11) and title-case the rest
+        formatted = " ".join(word.upper() if sum(1 for c in word if c.isupper() or c.isdigit()) > 0 
+                             else word.title() for word in phrase.split())
+        
+        if len(formatted) > 2 and formatted not in cleaned_tags:
+            cleaned_tags.append(formatted)
 
-    return cleaned[:max_tags]
+    return cleaned_tags[:max_tags]
 
 
 def _frequency_fallback(text: str, max_tags: int) -> list:

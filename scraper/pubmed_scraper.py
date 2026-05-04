@@ -180,7 +180,7 @@ def build_record(pmid: str, parsed: Dict[str, Any], citation_count: int) -> Dict
         "abstract": parsed["abstract"],
         "citation_count": citation_count,
     }
-    # Important: Apply the trust score algorithm so the JSON is completely formed.
+    # Apply the trust score native processing
     record["trust_score"] = calculate_trust_score(record)
     return record
 
