@@ -22,8 +22,8 @@ from utils.language_detect import detect_language
 from utils.tagging import extract_tags
 BLOG_URLS = [
     "https://realpython.com/python-web-scraping-practical-introduction/",
-    "https://openai.com/blog/introducing-chatgpt-and-whisper-apis",
-    "https://www.health.harvard.edu/healthy-aging-and-longevity/healthy-eating-plate",
+    "https://huggingface.co/blog/bert-101",
+    "https://en.wikipedia.org/wiki/Artificial_intelligence_in_healthcare",
 ]
 
 DEFAULT_HEADERS = {

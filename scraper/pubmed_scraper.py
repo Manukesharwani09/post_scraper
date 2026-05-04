@@ -2,13 +2,16 @@
 scraper/pubmed_scraper.py
 --------------------------
 Scrapes 1 PubMed article using the NCBI E-Utilities API (no API key required).
-Extracts: title, authors, journal, abstract, publication year.
+Extracts: title, authors, journal, abstract, publication date, and region.
 Outputs JSON to output/pubmed.json
 """
 
+import html
 import json
 import os
 import sys
+import time
+import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +20,7 @@ import requests
 from utils.chunking import chunk_text
 from utils.language_detect import detect_language
 from utils.tagging import extract_tags
+from scoring.trust_score import calculate_trust_score
 
 # ── Target article (PMID) ─────────────────────────────────────────────────────
 # "Artificial intelligence in healthcare" – Nature Medicine review
@@ -45,20 +49,9 @@ def fetch_xml(pmid: str) -> str:
     }
     resp = requests.get(NCBI_EFETCH, params=params, headers=DEFAULT_HEADERS, timeout=20)
     resp.raise_for_status()
+    # Respect NCBI limit of 3 requests/sec without API key
+    time.sleep(0.4)
     return resp.text
-
-
-def fetch_summary(pmid: str) -> dict:
-    """Fetch ESummary JSON for citation count and extra metadata."""
-    params = {
-        "db": "pubmed",
-        "id": pmid,
-        "retmode": "json",
-    }
-    resp = requests.get(NCBI_ESUMMARY, params=params, headers=DEFAULT_HEADERS, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("result", {}).get(pmid, {})
 
 
 def get_citation_count(pmid: str) -> int:
@@ -73,6 +66,7 @@ def get_citation_count(pmid: str) -> int:
     try:
         resp = requests.get(NCBI_ELINK, params=params, headers=DEFAULT_HEADERS, timeout=20)
         resp.raise_for_status()
+        time.sleep(0.4)
         data = resp.json()
         linksets = data.get("linksets", [{}])
         if linksets:
@@ -85,60 +79,80 @@ def get_citation_count(pmid: str) -> int:
     return 0
 
 
-# ── XML parsing (no external XML parser needed) ───────────────────────────────
+# ── XML parsing ───────────────────────────────────────────────────────────────
 
-def _extract_tag(xml: str, tag: str) -> Optional[str]:
-    """Naive single-value tag extractor."""
-    import re
-    m = re.search(rf'<{tag}[^>]*>(.*?)</{tag}>', xml, re.DOTALL)
-    return m.group(1).strip() if m else None
-
-
-def _extract_all_tags(xml: str, tag: str) -> List[str]:
-    """Extract all values for a repeating tag."""
-    import re
-    return [m.strip() for m in re.findall(rf'<{tag}[^>]*>(.*?)</{tag}>', xml, re.DOTALL)]
+def _parse_month(month: str) -> str:
+    months = {"Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", "May": "05", "Jun": "06", 
+              "Jul": "07", "Aug": "08", "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12"}
+    return months.get(month, month)
 
 
-def parse_article_xml(xml: str) -> Dict[str, Any]:
-    """Parse the XML efetch response into a structured dict."""
-    import re
+def parse_article_xml(xml_data: str) -> Dict[str, Any]:
+    """Parse the XML efetch response using ElementTree into a structured dict."""
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError:
+        return {"title": "Unknown", "authors": "Unknown", "journal": "Unknown", "abstract": "", "date": "Unknown", "region": "Global"}
 
-    title = _extract_tag(xml, "ArticleTitle") or "Unknown"
-    # Strip any nested tags inside title
-    title = re.sub(r'<[^>]+>', '', title).strip()
+    # Extract Title
+    title = root.findtext('.//ArticleTitle') or "Unknown"
+    title = html.unescape(title.strip())
 
-    abstract_texts = _extract_all_tags(xml, "AbstractText")
-    abstract = " ".join(re.sub(r'<[^>]+>', '', t) for t in abstract_texts).strip()
-    if not abstract:
-        abstract = ""
+    # Extract Abstract
+    abstract_parts = []
+    for node in root.findall('.//AbstractText'):
+        if node.text:
+            text = html.unescape(node.text.strip())
+            label = node.get('Label', '')
+            if label:
+                text = f"{label}: {text}"
+            abstract_parts.append(text)
+    abstract = "\n\n".join(abstract_parts) if abstract_parts else ""
 
-    # Authors: collect LastName + ForeName
-    last_names = _extract_all_tags(xml, "LastName")
-    fore_names = _extract_all_tags(xml, "ForeName")
-    if last_names:
-        authors = [
-            f"{l}, {f}".strip(", ")
-            for l, f in zip(
-                last_names,
-                fore_names + [""] * (len(last_names) - len(fore_names))
-            )
-        ]
-        author_str = "; ".join(authors)
-    else:
-        author_str = "Unknown"
+    # Extract Authors securely
+    authors = []
+    for author_node in root.findall('.//Author'):
+        last = author_node.findtext('LastName')
+        first = author_node.findtext('ForeName')
+        if last and first:
+            authors.append(f"{last}, {first}")
+        else:
+            collective = author_node.findtext('CollectiveName')
+            if collective:
+                authors.append(collective)
+    author_str = "; ".join(authors) if authors else "Unknown"
 
-    journal = _extract_tag(xml, "Title") or _extract_tag(xml, "ISOAbbreviation") or "Unknown"
-    journal = re.sub(r'<[^>]+>', '', journal).strip()
+    # Extract Region from Affiliation
+    # Look for the last word/part of the affiliation string (often a country)
+    region = "Global"
+    affil_node = root.find('.//Affiliation')
+    if affil_node is not None and affil_node.text:
+        parts = affil_node.text.split(',')
+        if parts:
+            region = parts[-1].strip().strip('.')
 
-    year = _extract_tag(xml, "Year") or "Unknown"
+    # Extract Journal
+    journal = root.findtext('.//Title') or root.findtext('.//ISOAbbreviation') or "Unknown"
+    journal = html.unescape(journal.strip())
+
+    # Extract Date
+    pub_date = root.find('.//PubDate')
+    date_str = "Unknown"
+    if pub_date is not None:
+        year = pub_date.findtext('Year')
+        if year:
+            month = pub_date.findtext('Month', '01')
+            month = _parse_month(month)
+            day = pub_date.findtext('Day', '01').zfill(2)
+            date_str = f"{year}-{month}-{day}"
 
     return {
         "title": title,
         "authors": author_str,
         "journal": journal,
         "abstract": abstract,
-        "year": year,
+        "date": date_str,
+        "region": region,
     }
 
 
@@ -151,15 +165,14 @@ def build_record(pmid: str, parsed: Dict[str, Any], citation_count: int) -> Dict
     tags = extract_tags(content) if content else []
     chunks = chunk_text(content) if content else []
 
-    return {
+    record = {
         "source_url": url,
         "source_type": "pubmed",
         "author": parsed["authors"],
-        "published_date": parsed["year"],
+        "published_date": parsed["date"],
         "language": lang,
-        "region": "Global",
+        "region": parsed["region"],
         "topic_tags": tags,
-        "trust_score": 0.0,
         "content_chunks": chunks,
         # Extra PubMed-specific fields
         "title": parsed["title"],
@@ -167,12 +180,15 @@ def build_record(pmid: str, parsed: Dict[str, Any], citation_count: int) -> Dict
         "abstract": parsed["abstract"],
         "citation_count": citation_count,
     }
+    # Important: Apply the trust score algorithm so the JSON is completely formed.
+    record["trust_score"] = calculate_trust_score(record)
+    return record
 
 
 def scrape_pubmed(pmid: str) -> Dict[str, Any]:
     print(f"  Fetching PMID {pmid} XML …")
-    xml = fetch_xml(pmid)
-    parsed = parse_article_xml(xml)
+    xml_data = fetch_xml(pmid)
+    parsed = parse_article_xml(xml_data)
 
     print(f"  Fetching citation count for PMID {pmid} …")
     cites = get_citation_count(pmid)
@@ -192,7 +208,7 @@ def main() -> None:
             print(f"  ERROR: {e}")
             data = build_record(pmid, {
                 "title": "Unknown", "authors": "Unknown",
-                "journal": "Unknown", "abstract": "", "year": "Unknown"
+                "journal": "Unknown", "abstract": "", "date": "Unknown", "region": "Global"
             }, 0)
         results.append(data)
 
