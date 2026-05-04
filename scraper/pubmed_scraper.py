@@ -86,6 +86,21 @@ def _parse_month(month: str) -> str:
               "Jul": "07", "Aug": "08", "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12"}
     return months.get(month, month)
 
+def _extract_region(affil: str) -> str:
+    """Extract country from an affiliation string efficiently."""
+    if not affil:
+        return "Global"
+    import re
+    parts = affil.split(',')
+    for part in reversed(parts):
+        p = re.sub(r'\d+', '', part).strip().strip('.')
+        if '@' in p or p.lower() in ("inc", "llc", "ltd"):
+            continue
+        if any(w in p.lower() for w in ("university", "department", "hospital", "institute", "school", "center", "centre")):
+            continue
+        if len(p) > 2:
+            return p
+    return "Global"
 
 def parse_article_xml(xml_data: str) -> Dict[str, Any]:
     """Parse the XML efetch response using ElementTree into a structured dict."""
@@ -94,11 +109,9 @@ def parse_article_xml(xml_data: str) -> Dict[str, Any]:
     except ET.ParseError:
         return {"title": "Unknown", "authors": "Unknown", "journal": "Unknown", "abstract": "", "date": "Unknown", "region": "Global"}
 
-    # Extract Title
     title = root.findtext('.//ArticleTitle') or "Unknown"
     title = html.unescape(title.strip())
 
-    # Extract Abstract
     abstract_parts = []
     for node in root.findall('.//AbstractText'):
         if node.text:
@@ -109,7 +122,6 @@ def parse_article_xml(xml_data: str) -> Dict[str, Any]:
             abstract_parts.append(text)
     abstract = "\n\n".join(abstract_parts) if abstract_parts else ""
 
-    # Extract Authors securely
     authors = []
     for author_node in root.findall('.//Author'):
         last = author_node.findtext('LastName')
@@ -122,20 +134,12 @@ def parse_article_xml(xml_data: str) -> Dict[str, Any]:
                 authors.append(collective)
     author_str = "; ".join(authors) if authors else "Unknown"
 
-    # Extract Region from Affiliation
-    # Look for the last word/part of the affiliation string (often a country)
-    region = "Global"
     affil_node = root.find('.//Affiliation')
-    if affil_node is not None and affil_node.text:
-        parts = affil_node.text.split(',')
-        if parts:
-            region = parts[-1].strip().strip('.')
+    region = _extract_region(affil_node.text) if affil_node is not None else "Global"
 
-    # Extract Journal
     journal = root.findtext('.//Title') or root.findtext('.//ISOAbbreviation') or "Unknown"
     journal = html.unescape(journal.strip())
 
-    # Extract Date
     pub_date = root.find('.//PubDate')
     date_str = "Unknown"
     if pub_date is not None:
@@ -162,7 +166,8 @@ def build_record(pmid: str, parsed: Dict[str, Any], citation_count: int) -> Dict
     url = f"{PUBMED_BASE}{pmid}/"
     content = parsed["abstract"]
     lang = detect_language(content) if content else "Unknown"
-    tags = extract_tags(content) if content else []
+    from utils.tagging import pubmed_extract_tags
+    tags = pubmed_extract_tags(content) if content else []
     chunks = chunk_text(content) if content else []
 
     record = {
@@ -174,13 +179,11 @@ def build_record(pmid: str, parsed: Dict[str, Any], citation_count: int) -> Dict
         "region": parsed["region"],
         "topic_tags": tags,
         "content_chunks": chunks,
-        # Extra PubMed-specific fields
         "title": parsed["title"],
         "journal": parsed["journal"],
         "abstract": parsed["abstract"],
         "citation_count": citation_count,
     }
-    # Apply the trust score native processing
     record["trust_score"] = calculate_trust_score(record)
     return record
 

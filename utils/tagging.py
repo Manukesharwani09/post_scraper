@@ -140,3 +140,53 @@ def _frequency_fallback(text: str, max_tags: int) -> list:
     filtered = [w for w in words if w not in STOP_WORDS]
     common = Counter(filtered).most_common(max_tags * 2)
     return [word.title() for word, _ in common[:max_tags]]
+
+def pubmed_extract_tags(text: str, max_tags: int = 5) -> list:
+    """
+    Highly precise keyword extractor tuned for PubMed abstracts.
+    Filters out verbs, sentence fragments, and generic words, keeping only Noun chunks.
+    """
+    import nltk
+    from collections import Counter
+    try:
+        words = nltk.word_tokenize(text)
+        tags = nltk.pos_tag(words)
+    except Exception:
+        # Fallback if nltk packages aren't downloaded somehow
+        return extract_tags(text, max_tags)
+
+    phrases = []
+    current_phrase = []
+    
+    # Noun stringing logic
+    for word, pos in tags:
+        # Keep Nouns (NN*) and Adjectives (JJ*) if they bind directly linearly
+        if pos.startswith('NN') or pos.startswith('JJ'):
+            current_phrase.append(word)
+        else:
+            if current_phrase:
+                phrases.append(" ".join(current_phrase))
+                current_phrase = []
+    if current_phrase:
+         phrases.append(" ".join(current_phrase))
+         
+    ignore = {"research", "study", "findings", "methods", "healthcare", "disease", "treatment"}
+    
+    clean = []
+    for p in phrases:
+        p_clean = re.sub(r'[^A-Za-z0-9\-\sβ]', '', p).strip()
+        if len(p_clean) > 2 and p_clean.lower() not in ignore:
+            if p_clean.islower() or len(p_clean) < 4:
+                # Title case for short generic biological terms, keeping acronyms capital
+                p_clean = p_clean.title() if p_clean.islower() else p_clean
+            clean.append(p_clean)
+            
+    # Remove overlapping duplicates (e.g. "GDF11" and "recombinant GDF11") to keep variants distinct but not perfectly overlapping
+    freq = Counter(clean)
+    final = []
+    for k, v in freq.most_common(max_tags * 2):
+        if len(final) >= max_tags: break
+        if not any(k.lower() == existing.lower() for existing in final):
+            final.append(k)
+            
+    return final
