@@ -38,7 +38,7 @@ def run_blogs() -> list:
             data = scrape_blog(url)
         except Exception as e:
             print(f"  ⚠ Error scraping {url}: {e}")
-            data = blog_build_record(url, "Unknown", "Unknown", "")
+            data = blog_build_record(url, "Unknown", "Unknown", "", "Unknown", "")
         results.append(data)
     print(f"  ✓ {len(results)} blog entries scraped.")
     return results
@@ -71,7 +71,8 @@ def run_pubmed() -> list:
             print(f"  ⚠ Error scraping PMID {pmid}: {e}")
             data = pm_build_record(pmid, {
                 "title": "Unknown", "authors": "Unknown",
-                "journal": "Unknown", "abstract": "", "year": "Unknown"
+                "journal": "Unknown", "abstract": "",
+                "date": "Unknown", "region": "Global"
             }, 0)
         results.append(data)
     print(f"  ✓ {len(results)} PubMed entries scraped.")

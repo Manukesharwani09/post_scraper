@@ -141,6 +141,8 @@ PROMO_KEYWORDS = [
     "instagram", "reddit", "website", "download", "stream", "playlist", "course",
     "certificate", "program", "specialization", "bootcamp", "career", "jobassist",
     "learn more", "watch more", "sign up", "buy", "sponsor", "donation",
+    "timeline", "timestamps", "chapters", "credits", "translation", "subtitles",
+    "soundtrack", "music by", "thanks to", "social media", "funding",
 ]
 
 

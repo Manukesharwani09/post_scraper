@@ -7,7 +7,7 @@
 
 ## 1. Scraping Strategy
 
-The pipeline uses a **source-specific scraper** for each content type, all sharing common utilities for language detection, topic tagging, and text chunking.
+The pipeline uses a **source-specific scraper** for each content type, all sharing common utilities for language detection, topic tagging, and text chunking (sentence-aligned, word-based chunks for retrieval stability).
 
 ### Blog Posts
 Blogs are fetched as static HTML using the `requests` library with a realistic browser `User-Agent`. The extraction pipeline follows a priority cascade:
@@ -62,7 +62,7 @@ The two highest-weight factors (author credibility and domain authority) jointly
 | Missing author | Credibility score = 0.2 (low, not zero — article may still be credible) |
 | Missing publish date | Recency score = 0.4 (neutral penalty) |
 | Multiple authors | Average credibility score across all authors |
-| No transcript (YouTube) | Fall back to video description for content |
+| No transcript (YouTube) | Fall back to video description for content; apply a small trust penalty if content is shallow |
 | Empty content | Trust score = 0.0 (no content, no reliability signal) |
 | Non-English content | Language detection flags it; scoring is language-agnostic |
 | Very short text | Language detection returns "Unknown"; chunker returns empty/single list |

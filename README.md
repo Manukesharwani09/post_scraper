@@ -100,7 +100,7 @@ Every scraped record follows this JSON schema:
 ### Blogs
 - Fetch HTML with `requests`
 - Extract author/date from JSON-LD structured data, then `<meta>` tags, then DOM heuristics
-- Strip navigation, ads, footers; collect `<p>` text from `<article>` / `<main>` containers
+- Strip navigation, ads, footers; collect `<p>`/`<li>`/`<h2>`/`<h3>`/`<code>` text from `<article>` / `<main>` containers
 - Fallback to description meta-tag if no body found
 
 ### YouTube
@@ -134,6 +134,9 @@ Trust Score = weighted_average(
 | **Domain authority** | .edu/.gov/ncbi → 0.9; known tech → 0.7; spam hosts → 0.2 |
 | **Recency** | <1yr → 1.0; 1-3yr → 0.75; 3-5yr → 0.5; >5yr → 0.25; Unknown → 0.4 |
 | **Medical disclaimer** | Disclaimer present → 1.0; healthcare + no disclaimer → 0.2; non-medical → 0.8 |
+
+Additional adjustments:
+- **YouTube transcript availability**: short or shallow extracted content receives a small penalty.
 
 See `scoring/trust_score.py` for full implementation including abuse prevention logic.
 
