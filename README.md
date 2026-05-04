@@ -77,7 +77,7 @@ python scraper/pubmed_scraper.py
 
 ## Output Schema
 
-Every scraped record follows this JSON schema:
+Every scraped record follows this JSON schema (with a few source-specific extras noted below):
 
 ```json
 {
@@ -92,6 +92,10 @@ Every scraped record follows this JSON schema:
   "content_chunks": ["Paragraph 1...", "Paragraph 2..."]
 }
 ```
+
+Additional fields:
+- Blogs/YouTube: `title`, `description`
+- PubMed: `title`, `journal`, `abstract`, `citation_count`
 
 ---
 
@@ -129,9 +133,9 @@ Trust Score = weighted_average(
 
 | Factor | Rules |
 |---|---|
-| **Author credibility** | Known institutions → 0.9; Unknown → 0.2; Generic → 0.6 |
-| **Citation count** | PubMed only; 0 cites → 0.1; 200+ cites → 1.0; others → 0.5 |
-| **Domain authority** | .edu/.gov/ncbi → 0.9; known tech → 0.7; spam hosts → 0.2 |
+| **Author credibility** | Known institutions → 0.95; Unknown → 0.2; Structured name → 0.8; Generic → 0.5 |
+| **Citation count** | PubMed only; 0 cites → 0.5; 1–4 → 0.7; 5–14 → 0.85; 15+ → 1.0; others → 0.5 |
+| **Domain authority** | .edu/.gov/ncbi → 0.9; known tech/media → 0.7; spam hosts → 0.2 |
 | **Recency** | <1yr → 1.0; 1-3yr → 0.75; 3-5yr → 0.5; >5yr → 0.25; Unknown → 0.4 |
 | **Medical disclaimer** | Disclaimer present → 1.0; healthcare + no disclaimer → 0.2; non-medical → 0.8 |
 
