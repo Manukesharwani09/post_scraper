@@ -320,11 +320,6 @@ def build_record(url: str, meta: Dict[str, Optional[str]], transcript: str) -> D
         "description": meta.get("description") or "",
     }
     record["trust_score"] = calculate_trust_score(record)
-    # Transcript presence raises trust; missing transcript slightly lowers it
-    if transcript:
-        record["trust_score"] = min(record["trust_score"] + 0.05, 1.0)
-    else:
-        record["trust_score"] = max(record["trust_score"] - 0.08, 0.0)
     return record
 
 
