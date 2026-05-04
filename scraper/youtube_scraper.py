@@ -135,36 +135,99 @@ def get_transcript(video_url: str) -> str:
         return ""
 
 
+# ── Content cleaning ────────────────────────────────────────────────────────────
+
+def clean_text(text: str) -> str:
+    """
+    Remove noise from YouTube description or transcript:
+      - URLs
+      - Hashtags
+      - Timestamps (e.g., 10:24, 1:23:45)
+      - Emojis
+      - Promotional text ("subscribe", "link in bio", "patreon")
+    """
+    if not text:
+        return ""
+
+    # Replace URLs with spaces to safely prevent word-merging
+    text = re.sub(r'https?://[^\s]+', ' ', text)
+    
+    # Remove timestamps properly matching start of line or space
+    text = re.sub(r'\b\d{1,2}:\d{2}(:\d{2})?\b', ' ', text)
+
+    # Remove hashtags but leave space
+    text = re.sub(r'#[a-zA-Z0-9_]+', ' ', text)
+
+    # Remove standard promotional phrases
+    promo_phrases = [
+        "subscribe to our channel", "subscribe", "patreon", "click here", "link below", 
+        "link in description", "follow us", "twitter", "facebook", "instagram", "reddit",
+        "website:", "download the music", "stream the music", "learn more at:"
+    ]
+    for phrase in promo_phrases:
+        text = re.sub(rf'\b{re.escape(phrase)}\b', ' ', text, flags=re.IGNORECASE)
+
+    # Remove generic bracketed sounds (e.g. [Music], (Applause))
+    text = re.sub(r'\[.*?\]|\(.*?\)', ' ', text)
+    
+    # Remove emojis (basic range block)
+    text = re.sub(r'[^\w\s.,?!;:\-\'\"]', ' ', text)
+
+    # Collapse multiple spaces safely
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 # ── Record builder ────────────────────────────────────────────────────────────
 
-def build_record(url: str, meta: Dict[str, Optional[str]], content: str) -> Dict[str, Any]:
-    lang = detect_language(content) if content else "Unknown"
-    tags = extract_tags(content) if content else extract_tags(meta.get("description", "") or "")
-    chunks = chunk_text(content) if content else chunk_text(meta.get("description", "") or "")
+def build_record(url: str, meta: Dict[str, Optional[str]], transcript: str) -> Dict[str, Any]:
+    raw_desc = meta.get("description") or ""
+    
+    if transcript:
+        clean_content = clean_text(transcript)
+        # Safely split standard 'timeline' layout descriptions and grab essential context
+        desc_head = raw_desc.split("Timeline")[0] if "Timeline" in raw_desc else raw_desc
+        clean_desc = clean_text(desc_head)
+        if clean_desc:
+            clean_content += " " + clean_desc[:500]
+    else:
+        # Aggressive aggressive desc formatting handled by clean_text natively
+        clean_content = clean_text(raw_desc)
+    
+    lang = detect_language(clean_content) if clean_content else "Unknown"
+    
+    # Optional: we can use pubmed_extract_tags for high-quality Nouns but normal extract_tags is fine if text is clean
+    tags = extract_tags(clean_content) if clean_content else []
+    chunks = chunk_text(clean_content) if clean_content else []
 
-    return {
+    # Normalize Date
+    raw_date = meta.get("publish_date") or "Unknown"
+    iso_date_match = re.search(r'\d{4}-\d{2}-\d{2}', raw_date)
+    norm_date = iso_date_match.group(0) if iso_date_match else raw_date
+
+    from scoring.trust_score import calculate_trust_score
+
+    record = {
         "source_url": url,
         "source_type": "youtube",
         "author": meta.get("channel") or "Unknown",
-        "published_date": meta.get("publish_date") or "Unknown",
+        "published_date": norm_date,
         "language": lang,
         "region": "Global",
         "topic_tags": tags,
-        "trust_score": 0.0,
         "content_chunks": chunks,
-        # Extra fields for richer output
         "title": meta.get("title") or "Unknown",
         "description": meta.get("description") or "",
     }
+    record["trust_score"] = calculate_trust_score(record)
+    return record
 
 
 def scrape_youtube(url: str) -> Dict[str, Any]:
     html = fetch_html(url)
     meta = extract_metadata(html, url)
     transcript = get_transcript(url)
-    # Use transcript if available, fall back to description
-    content = transcript if transcript else (meta.get("description") or "")
-    return build_record(url, meta, content)
+    return build_record(url, meta, transcript)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

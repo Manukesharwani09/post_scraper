@@ -39,32 +39,28 @@ def extract_tags(text: str, max_tags: int = 5) -> list:
     """
     Extract topic tags from the given text.
     
-    Strategy:
-      1. Use RAKE for keyword extraction (NLP-based) with capitalization rules.
-      2. Exclude highly generic terms like 'Research'.
-
-    Args:
-        text: Input text to analyse.
-        max_tags: Maximum number of tags to return.
-
-    Returns:
-        List of tag strings, e.g. ["Recombinant GDF11", "Machine Learning"]
+    Strategy for generic/blog/youtube sources:
+      1. Strongly prefer known domain categories (AI, Machine Learning).
+      2. Fill remaining slots using POS-based Noun chunking (high precision).
     """
     if not text or not text.strip():
         return []
 
-    try:
-        rake_tags = _rake_extract(text, max_tags + 2)
-    except Exception:
-        rake_tags = []
+    text_lower = text.lower()
+    matched_domain_tags = _match_domain_hints(text_lower)
 
-    # Prioritize RAKE results natively. Don't crowd with domain hints.
-    combined = []
+    try:
+        nlp_tags = pubmed_extract_tags(text, max_tags + 3)
+    except Exception:
+        nlp_tags = []
+
+    combined = [t for t in matched_domain_tags if t.lower() not in {"youtube", "music", "video", "subscribe"}]
     
-    for tag in rake_tags:
-        if tag not in combined and len(tag) > 3:
+    for tag in nlp_tags:
+        if tag not in combined and 3 < len(tag) < 30 and tag.lower() not in {"youtube", "music", "video", "subscribe", "link"}:
             combined.append(tag)
 
+    # Limit to top 5-7 high-signal tags
     return combined[:max_tags]
 
 
